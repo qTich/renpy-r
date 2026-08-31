@@ -502,24 +502,61 @@ cdef class GLTexture(GL2Model):
     def __repr__(self):
         return "<GLTexture {}x{} {}>".format(self.width, self.height, self.number)
 
+    cdef inline void _load_gltex_from_surface(GLTexture self):
+        cdef:
+            SDL_Surface *s = self.surface.sdl_surface
+            int i
+            int update_pitch = s.pitch
+            unsigned char *copy_src
+            unsigned char *copy_dst
+            unsigned char *staging_buffer
+            unsigned char *update_buffer = <unsigned char *> s.pixels
+
+        # alignment buffer
+        if s.pitch != s.w * 4:
+            update_pitch = s.w * 4
+
+            staging_buffer = <unsigned char *> malloc(s.h * update_pitch)
+            if staging_buffer == NULL:
+                raise MemoryError()
+
+            copy_src = <unsigned char *> s.pixels
+            copy_dst = staging_buffer
+
+            for i in range(s.h):
+                memcpy(copy_dst, copy_src, update_pitch)
+                copy_src += s.pitch
+                copy_dst += update_pitch
+
+            update_buffer = staging_buffer
+
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, s.w)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, s.w, s.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, update_buffer)
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0)
+
+        # alignment buffer
+        if s.pitch != s.w * 4:
+            free(staging_buffer)
+
     def load_gltexture(GLTexture self):
         """
         Loads this texture. When it's loaded, generation and number are set,
         and the texture is ready to use.
         """
 
-        cdef GLuint tex
-        cdef GLuint premultiplied
-        cdef Program program
-        cdef SDL_Surface *s
-        cdef GLuint pixel_buffer
+        cdef:
+            GLuint tex
+            GLuint premultiplied
+            Program program
 
         if self.loaded:
             return
 
         draw = self.loader.draw
-
-        s = self.surface.sdl_surface
 
         # Generate the old textures.
         glGenTextures(1, &tex)
@@ -538,28 +575,7 @@ cdef class GLTexture(GL2Model):
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
 
-        # Use a pixel buffer to create a texture.
-        # Why use a Pixel Buffer? Apart from potentially being faster, this
-        # works around a bug in Samsung android devices running Android 11,
-        # where glTexImage2D doesn't seem to work when the pixels are not
-        # aligned.
-
-        # But it doesn't seem to work with ANGLE or emscripten, so we avoid using PBOs when
-        # angle is in use.
-
-        if not renpy.emscripten and not draw.angle:
-
-            glGenBuffers(1, &pixel_buffer)
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pixel_buffer)
-            glBufferData(GL_PIXEL_UNPACK_BUFFER, s.h * s.pitch, s.pixels, GL_STATIC_DRAW)
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, s.pitch // 4)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.width, self.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, <void *> 0)
-            glDeleteBuffers(1, &pixel_buffer)
-
-        else:
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, s.pitch // 4)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.width, self.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, s.pixels)
-
+        self._load_gltex_from_surface()
 
         mesh = Mesh2.texture_rectangle(-1.0, -1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0)
 
@@ -598,17 +614,11 @@ cdef class GLTexture(GL2Model):
         and the texture is ready to use.
         """
 
-        cdef GLuint premultiplied
-        cdef Program program
-        cdef SDL_Surface *s
-        cdef GLuint pixel_buffer
+        cdef:
+            GLuint premultiplied
 
         if self.loaded:
             return
-
-        draw = self.loader.draw
-
-        s = self.surface.sdl_surface
 
         glGenTextures(1, &premultiplied)
 
@@ -618,28 +628,7 @@ cdef class GLTexture(GL2Model):
         self.allocate_texture(premultiplied, self.width, self.height, self.properties)
         glBindTexture(GL_TEXTURE_2D, premultiplied)
 
-        # Use a pixel buffer to create a texture.
-        # Why use a Pixel Buffer? Apart from potentially being faster, this
-        # works around a bug in Samsung android devices running Android 11,
-        # where glTexImage2D doesn't seem to work when the pixels are not
-        # aligned.
-
-        # But it doesn't seem to work with ANGLE or emscripten, so we avoid using PBOs when
-        # angle is in use.
-
-        if not renpy.emscripten and not draw.angle:
-
-            glGenBuffers(1, &pixel_buffer)
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pixel_buffer)
-            glBufferData(GL_PIXEL_UNPACK_BUFFER, s.h * s.pitch, s.pixels, GL_STATIC_DRAW)
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, s.pitch // 4)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.width, self.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, <void *> 0)
-            glDeleteBuffers(1, &pixel_buffer)
-
-        else:
-
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, s.pitch // 4)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.width, self.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, s.pixels)
+        self._load_gltex_from_surface()
 
         self.mipmap_texture(premultiplied, self.width, self.height, self.properties)
 
